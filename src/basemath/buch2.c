@@ -3180,6 +3180,7 @@ compute_R(GEN lambda, GEN z, GEN *ptL, GEN *ptkR, pari_timer *T)
 
   if (DEBUGLEVEL) { err_printf("\n#### Computing check\n"); err_flush(); }
   D = gmul2n(mpmul(*ptkR,z), 1); /* bound for denom(lambda) */
+  //output(D);
   if (expo(D) < 0 && rtodbl(D) < 0.95) return fupb_PRECI;
   lambda = bestappr_noer(lambda,D);
   if (!lambda)
@@ -4461,4 +4462,769 @@ START:
   res = buchall_end(nf,res,clg2,W,B,A,C,Vbase);
   res = gerepilecopy(av0, res); if (precdouble) gunclone(nf);
   return res;
+}
+
+GEN
+random_units_time(GEN P, int max_time, long flag, long prec)
+{ return random_units_param(P, 1, max_time, 0, 0, 0, BNF_C1, BNF_C2, BNF_RELPID, flag, prec); }
+
+GEN
+random_units(GEN P, int flag, int max_time, int max_rel, int n_units, int n_val, long flun, long prec)
+{ return random_units_param(P, flag, max_time, max_rel, n_units, n_val, BNF_C1, BNF_C2, BNF_RELPID, flag, prec); }
+
+static GEN
+getfu_alt(GEN nf, GEN *ptA, long *pte, long prec)
+{
+  GEN u, y, matep, A, vec, T = nf_get_pol(nf), M = nf_get_M(nf);
+  long e, i, j, R1, RU, N = degpol(T), A_size;
+
+  if (DEBUGLEVEL) err_printf("\n#### Computing fundamental units\n");
+  R1 = nf_get_r1(nf); RU = (N+R1)>>1;
+  if (RU==1) { *pte=LONG_MAX; return cgetg(1,t_VEC); }
+
+  *pte = 0; A = *ptA;
+
+  A_size = lg(A)-1;
+  
+  matep = cgetg(A_size,t_MAT);
+  for (j=1; j<A_size; j++)
+  {
+    GEN c = cgetg(RU+1,t_COL), Aj = gel(A,j);
+    GEN s = gdivgs(RgV_sum(real_i(Aj)), -N); /* -log |norm(Aj)| / N */
+    gel(matep,j) = c;
+    for (i=1; i<=R1; i++) gel(c,i) = gadd(s, gel(Aj,i));
+    for (   ; i<=RU; i++) gel(c,i) = gadd(s, gmul2n(gel(Aj,i),-1));
+  }
+  u = lll(real_i(matep));//lll was here originally
+  //printf("matep: (%li, %li), u: (%li,%li)\n", lg(matep), lg(gel(matep, 1)), lg(u), lg(gel(u, 1)));
+
+  y = RgM_mul(matep,u);
+  A_size = lg(y);
+  if (!exp_OK(y, pte))
+    return not_given(*pte == LONG_MAX? fupb_LARGE: fupb_PRECI);
+  if (prec <= 0) prec = gprecision(A);
+  y = RgM_solve_realimag(M, gexp(y,prec));
+  if (!y) return not_given(fupb_PRECI);
+  y = grndtoi(y, &e);
+  *pte = -e;
+  if (e >= 0) return not_given(fupb_PRECI);
+  for (j=1; j<A_size; j++)
+    if (!is_pm1(nfnorm(nf, gel(y,j)))) { *pte=0; return not_given(fupb_PRECI); }
+  settyp(y, t_VEC);
+  /* y[i] are unit generators. Normalize: smallest T2 norm + lead coeff > 0 */
+  vec = log_m1(R1,RU,prec);
+  for (j=1; j<A_size; j++)
+  {
+    GEN u = gel(y,j), v = zk_inv(nf, u);
+    if (gcmp(RgC_fpnorml2(v,DEFAULTPREC),
+             RgC_fpnorml2(u,DEFAULTPREC)) < 0)
+    {
+      u = v;
+    }
+    u = coltoliftalg(nf,u);
+    if (gsigne(leading_coeff(u)) < 0)
+    {
+      u = RgX_neg(u);
+    }
+    gel(y,j) = u;
+  }
+  return y;
+}
+static int
+compute_L(GEN A, long RU, long N, long *pneed, GEN *ptL)
+{
+  GEN T, d, mdet, Im_mdet, xreal, L, D, den;
+  long i, j, r, R1 = 2*RU - N;
+  int precpb;
+  pari_sp av = avma;
+
+  if (RU == 1) { *ptL = zeromat(0, lg(A)-1); return fupb_NONE; }
+
+  if (DEBUGLEVEL) err_printf("\n#### Computing regulator multiple\n");
+  xreal = real_i(A); /* = (log |sigma_i(u_j)|) */
+  mdet = clean_cols(xreal, &precpb);
+  /* will cause precision to increase on later failure, but we may succeed! */
+  *ptL = precpb? NULL: gen_1;
+  T = cgetg(RU+1,t_COL);
+  for (i=1; i<=R1; i++) gel(T,i) = gen_1;
+  for (   ; i<=RU; i++) gel(T,i) = gen_2;
+  mdet = shallowconcat(T, mdet); /* det(Span(mdet)) = N * R */
+
+  /* could be using indexrank(), but need custom "get_pivot" function */
+  d = RgM_pivots(mdet, NULL, &r, &compute_multiple_of_R_pivot);
+  /* # of independent columns == unit rank ? */
+  /*if (lg(mdet)-1 - r != RU)
+  {
+    if (DEBUGLEVEL)
+      err_printf("Unit group rank = %ld < %ld\n",lg(mdet)-1 - r, RU);
+    *pneed = RU - (lg(mdet)-1-r);
+    avma = av; return NULL;
+  }*/
+
+  Im_mdet = cgetg(lg(mdet)-r, t_MAT); /* extract independent columns */
+  /* N.B: d[1] = 1, corresponding to T above */
+  gel(Im_mdet, 1) = T;
+  for (i = j = 2; i <= lg(mdet)-r; j++)
+    if (d[j]) gel(Im_mdet, i++) = gel(mdet,j);
+  if (lg(mdet)-r<= 2){ *ptL = NULL; return fupb_NONE ; }
+
+  L = RgM_inv(Im_mdet);
+  if (!L) { *ptL = L; return fupb_NONE ; }
+
+
+  //printf("rows of L: %li\n", lg(L)-1);
+  L = rowslice(L, 2, lg(mdet)-r-1); /* remove first line */
+  L = RgM_mul(L, xreal); /* approximate rational entries */
+  //Need to work out what to replace the next line with
+  //D = gmul2n(mpmul(*ptkR,z), 1); /* bound for denom(lambda) */
+  D = gmul2n(stoi(1), -50);
+  //output(D);
+  //if (expo(D) < 0 && rtodbl(D) < 0.95) *ptL = NULL; return fupb_PRECI;
+  L = bestappr_noer(L,D);
+  if (!L)
+  {
+    if (DEBUGLEVEL) err_printf("truncation error in bestappr\n");
+    return fupb_PRECI;
+  }
+  den = Q_denom(L);
+  /*if (mpcmp(den,D) > 0)
+  {
+    if (DEBUGLEVEL) err_printf("D = %Ps\nden = %Ps\n",D,
+                    lgefint(den) <= DEFAULTPREC? den: itor(den,LOWDEFAULTPREC));
+    return fupb_PRECI;
+  }*/
+  L = Q_muli_to_int(L, den);
+  gerepileall(av, 1, &L);
+
+  *ptL = L; return fupb_NONE;
+}
+/*same as in Buchall_param with the exception that there is a flag that checks to see if we halt at any point earlier.
+ * 0 Buchall_param
+ * 1 stop when reached max time
+ * 2 stop when reached max relationships
+ * 3 conditions 1 and 2
+ * */
+GEN
+random_units_param(GEN P, int flag, int max_time, int max_rel, int n_units, int n_val, double cbach, double cbach2, long nbrelpid, long flun, long prec)
+{
+  pari_timer T;
+  pari_sp av0 = avma, av, av2;
+  long PRECREG, N, R1, R2, RU, low, high, LIMC0, LIMC, LIMC2, LIMCMAX, zc, i;
+  long LIMres;
+  long MAXDEPSIZESFB, MAXDEPSFB;
+  long nreldep, sfb_trials, need, old_need, precdouble = 0, precadd = 0;
+  long done_small, small_fail, fail_limit, squash_index, small_norm_prec;
+  long flag_nfinit = 0;
+  double LOGD, LOGD2, lim;
+  GEN computed = NULL, zu, nf, M_sn, D, A, W, R, h, PERM, fu = NULL /*-Wall*/;
+  GEN small_multiplier;
+  GEN L, invhr, B, C, lambda, dep;
+  GEN auts, cyclic;
+  const char *precpb = NULL;
+  int FIRST = 1, class1 = 0;
+  nfmaxord_t nfT;
+  RELCACHE_t cache;
+  FB_t F;
+  GRHcheck_t GRHcheck;
+  FACT *fact;
+  int r_con = 0, done = 0; //Idea is this is used to tell the loop if we should return what we have
+  long rel_num= 0;
+  GEN fu0 = vectrunc_init(1);
+
+  if (DEBUGLEVEL) timer_start(&T);
+  P = get_nfpol(P, &nf);
+  if (nf)
+  {
+    PRECREG = nf_get_prec(nf);
+    D = nf_get_disc(nf);
+  }
+  else
+  {
+    PRECREG = maxss(prec, MEDDEFAULTPREC);
+    nfinit_basic(&nfT, P);
+    D = nfT.dK;
+    if (!equali1(leading_coeff(nfT.T0)))
+    {
+      pari_warn(warner,"non-monic polynomial in bnfinit, using polredbest");
+      flag_nfinit = nf_RED;
+    }
+  }
+  N = degpol(P);
+  if (N <= 1)
+  {
+    if (!nf) nf = nfinit_complete(&nfT, flag_nfinit, PRECREG);
+    return gerepilecopy(av0, Buchall_deg1(nf));
+  }
+  D = absi(D);
+  LOGD = dbllog2(D) * LOG2;
+  LOGD2 = LOGD*LOGD;
+  LIMCMAX = (long)(12.*LOGD2);
+  /* In small_norm, LLL reduction produces v0 in I such that
+   *     T2(v0) <= (4/3)^((n-1)/2) NI^(2/n) disc(K)^(1/n)
+   * We consider v with T2(v) <= BMULT * T2(v0)
+   * Hence Nv <= ((4/3)^((n-1)/2) * BMULT / n)^(n/2) NI sqrt(disc(K)).
+   * NI <= LIMCMAX^2 */
+  small_norm_prec = nbits2prec( BITS_IN_LONG +
+    (N/2. * ((N-1)/2.*log(4./3) + log(BMULT/(double)N))
+     + 2*log((double) LIMCMAX) + LOGD/2) / LOG2 ); /* enough to compute norms */
+  if (small_norm_prec > PRECREG) PRECREG = small_norm_prec;
+  if (!nf)
+    nf = nfinit_complete(&nfT, flag_nfinit, PRECREG);
+  else if (nf_get_prec(nf) < PRECREG)
+    nf = nfnewprec_shallow(nf, PRECREG);
+  M_sn = nf_get_M(nf);
+  if (PRECREG > small_norm_prec) M_sn = gprec_w(M_sn, small_norm_prec);
+
+  zu = rootsof1(nf);
+  gel(zu,2) = nf_to_scalar_or_alg(nf, gel(zu,2));
+
+  auts = automorphism_matrices(nf, &F.invs, &cyclic);
+  F.embperm = automorphism_perms(nf_get_M(nf), auts, cyclic, N);
+
+  nf_get_sign(nf, &R1, &R2); RU = R1+R2;
+  compute_vecG(nf, &F, minss(RU, 9));
+  if (DEBUGLEVEL)
+  {
+    timer_printf(&T, "nfinit & rootsof1");
+    err_printf("R1 = %ld, R2 = %ld\nD = %Ps\n",R1,R2, D);
+  }
+  if (LOGD < 20.) /* tiny disc, Minkowski *may* be smaller than Bach */
+  {
+    lim = exp(-N + R2 * log(4/M_PI) + LOGD/2) * sqrt(2*M_PI*N);
+    if (lim < 3) lim = 3;
+  }
+  else /* to be ignored */
+    lim = -1;
+  if (cbach > 12.) {
+    if (cbach2 < cbach) cbach2 = cbach;
+    cbach = 12.;
+  }
+  if (cbach < 0.)
+    pari_err_DOMAIN("Buchall","Bach constant","<",gen_0,dbltor(cbach));
+
+  cache.base = NULL; F.subFB = NULL; F.LP = NULL;
+  init_GRHcheck(&GRHcheck, N, R1, LOGD);
+  high = low = LIMC0 = maxss((long)(cbach2*LOGD2), 1);
+  while (!GRHchk(nf, &GRHcheck, high))
+  {
+    low = high;
+    high *= 2;
+  }
+  while (high - low > 1)
+  {
+    long test = (low+high)/2;
+    if (GRHchk(nf, &GRHcheck, test))
+      high = test;
+    else
+      low = test;
+  }
+  if (high == LIMC0+1 && GRHchk(nf, &GRHcheck, LIMC0))
+    LIMC2 = LIMC0;
+  else
+    LIMC2 = high;
+  if (LIMC2 > LIMCMAX) LIMC2 = LIMCMAX;
+  if (DEBUGLEVEL) err_printf("LIMC2 = %ld\n", LIMC2);
+  if (LIMC2 < nthideal(&GRHcheck, nf, 1)) class1 = 1;
+  if (DEBUGLEVEL && class1) err_printf("Class 1\n", LIMC2);
+  LIMC0 = (long)(cbach*LOGD2);
+  LIMC = cbach ? LIMC0 : LIMC2;
+  LIMC = maxss(LIMC, nthideal(&GRHcheck, nf, N));
+  if (DEBUGLEVEL) timer_printf(&T, "computing Bach constant");
+  LIMres = primeneeded(N, R1, R2, LOGD);
+  cache_prime_dec(&GRHcheck, LIMres, nf);
+  /* invhr ~ 2^r1 (2pi)^r2 / sqrt(D) w * Res(zeta_K, s=1) = 1 / hR */
+  invhr = gmul(gdiv(gmul2n(powru(mppi(DEFAULTPREC), R2), RU),
+              mulri(gsqrt(D,DEFAULTPREC),gel(zu,1))),
+              compute_invres(&GRHcheck, LIMres));
+  if (DEBUGLEVEL) timer_printf(&T, "computing inverse of hR");
+  av = avma;
+
+START:
+  if (DEBUGLEVEL) timer_start(&T);
+  if (!FIRST) LIMC = bnf_increase_LIMC(LIMC,LIMCMAX);
+  if (DEBUGLEVEL && LIMC > LIMC0)
+    err_printf("%s*** Bach constant: %f\n", FIRST?"":"\n", LIMC/LOGD2);
+  if (cache.base)
+  {
+    REL_t *rel;
+    for (i = 1, rel = cache.base + 1; rel < cache.last; rel++)
+      if (rel->m) i++;
+    computed = cgetg(i, t_VEC);
+    for (i = 1, rel = cache.base + 1; rel < cache.last; rel++)
+      if (rel->m) gel(computed, i++) = rel->m;
+    computed = gclone(computed);
+    delete_cache(&cache);
+  }
+  FIRST = 0; avma = av;
+  if (F.LP) delete_FB(&F);
+  if (LIMC2 < LIMC) LIMC2 = LIMC;
+  if (DEBUGLEVEL) { err_printf("LIMC = %ld, LIMC2 = %ld\n",LIMC,LIMC2); }
+
+  FBgen(&F, nf, N, LIMC, LIMC2, &GRHcheck);
+  if (!F.KC) goto START;
+  av = avma;
+  subFBgen(&F,auts,cyclic,lim < 0? LIMC2: mindd(lim,LIMC2),MINSFB);
+  if (DEBUGLEVEL)
+  {
+    if (lg(F.subFB) > 1)
+      timer_printf(&T, "factorbase (#subFB = %ld) and ideal permutations",
+                       lg(F.subFB)-1);
+    else
+      timer_printf(&T, "factorbase (no subFB) and ideal permutations");
+  }
+  fact = (FACT*)stack_malloc((F.KC+1)*sizeof(FACT));
+  PERM = leafcopy(F.perm); /* to be restored in case of precision increase */
+  cache.basis = zero_Flm_copy(F.KC,F.KC);
+  small_multiplier = zero_Flv(F.KC);
+  F.id2 = zerovec(F.KC);
+  MAXDEPSIZESFB = (lg(F.subFB) - 1) * DEPSIZESFBMULT;
+  MAXDEPSFB = MAXDEPSIZESFB / DEPSFBDIV;
+  done_small = 0; small_fail = 0; squash_index = 0;
+  fail_limit = F.KC + 1;
+  R = NULL; A = NULL;
+  av2 = avma;
+  init_rel(&cache, &F, RELSUP + RU-1); /* trivial relations */
+  old_need = need = cache.end - cache.last;
+  add_cyclotomic_units(nf, zu, &cache, &F);
+  cache.end = cache.last + need;
+
+  W = NULL; zc = 0;
+  sfb_trials = nreldep = 0;
+
+  if (computed)
+  {
+    for (i = 1; i < lg(computed); i++)
+      try_elt(&cache, &F, nf, gel(computed, i), fact);
+    if (isclone(computed)) gunclone(computed);
+    if (DEBUGLEVEL && i > 1)
+    {
+      err_printf("\n");
+      timer_printf(&T, "including already computed relations");
+    }
+    need = 0;
+  }
+
+  do
+  {
+    do
+    {
+      pari_sp av4 = avma;
+      rel_num += need;
+
+      if(flag < 0 && r_con > 0){//flag > 0 for it to be fixed
+	//need to LLL reduce A 
+	//output(FqM_ker(greal(vecslice(C, 1, zc)))); 
+        long e;
+        GEN temp_fu, L;
+	int unit_num = 0;
+	A = vecslice(C, 1, zc);//ZM_lll(roundr(greal(vecslice(C, 1, zc))), 0.99, "LL
+	for (int i = 1; i< lg(A); i++){	
+          if (gel(A, i) != zerocol(N)){
+	    GEN u = coltoliftalg(nf, gel(A, i));
+	    output(nfnorm(nf, u));
+	    output(u);
+	  }
+	}
+	//compute_L(A, RU, N, &need, &L);
+	if (L) { 
+        GEN AU, U, H, v = extract_full_lattice(L); /* L may be very large */
+	//the extract full lattice function only runs when L>=200
+        if (v)
+        {
+          A = vecpermute(A, v);
+          L = vecpermute(L, v);
+        }
+
+        /* arch. components of fund. units */
+        H = ZM_hnflll(L, &U, 1); U = vecslice(U, lg(U)-lg(H)-1, lg(U)-1);
+        //U = ZM_mul(U, ZM_lll(H, 0.99, LLL_IM|LLL_COMPATIBLE));//This line here is the problem, the matrix sizes do not match
+        AU = RgM_mul(A, U);
+        A = cleanarch(AU, N, PRECREG);
+	temp_fu = getfu_alt(nf, &A, &e, PRECREG);
+	if (temp_fu){
+	  for (int j = 1; j < lg(temp_fu); j++) {
+	    GEN element = gel(temp_fu, j);
+            if (degree(element) != 0 && truecoeff(element, 0) != gen_1) {
+	      unit_num += 1;
+	      vectrunc_append(fu0, gcopy(element));
+            }
+	  }
+	}
+	}
+	//GEN onesVector = cgetg(lg(gel(A_LLL, 1))+1, t_COL);
+	//for (long i = 1; i <= lg(gel(A_LLL, 1)); i++) gel(onesVector, i) = gen_1; 
+	//GEN test_fu = ZM_gauss(shallowtrans(A_LLL), onesVector);//need to do gaussian elimination here
+
+	//find linear independent vectors
+	//gaussian elimination
+	/*for (i = 0; i < (zc)/(RU-1)+1; i++){
+	  GEN indice_vector =const_vecsmall(RU-1, 1); 
+	  if (i > (zc)/(RU-1) -1){
+	    for (int j= 1; j < RU-1; j++) {
+	      if (j <= zc - i*(RU-1)) indice_vector[j]= i*(RU-1)+j;
+	    }
+	    if (vecsmall_max(indice_vector) != 1) A = vecpermute(C, indice_vector);
+	  }else{
+            A = vecslice(C, i*(RU-1) + 1, (RU-1)*(i+1)); * cols corresponding to units 
+	  }
+          if (A) temp_fu = getfu_alt(nf, &A, &e, PRECREG);
+	  if (temp_fu){
+	    output(temp_fu);
+	    for (int j = 1; j < lg(temp_fu); j++) {
+	      GEN element = gel(temp_fu, j);
+              if (degree(element) != 0 && truecoeff(element, 0) != gen_1) {
+		unit_num += 1;
+		vectrunc_append(fu0, gcopy(element));
+              }
+	    }
+	  }
+	}*/
+
+	if(unit_num>=n_units){	
+	  fu = fu0;
+	  done = 1;
+	  break;
+	}
+      }
+
+      
+      /*allows for us to set custom need value from program end*/
+      if (n_val != 0) need = n_val;
+
+      if (need > 0)
+      {
+        long oneed = cache.end - cache.last;
+        /* Test below can be true if small_norm did not find enough linearly
+         * dependent relations */
+        if (need < oneed) need = oneed;
+        pre_allocate(&cache, need+lg(auts)-1+(R ? lg(W)-1 : 0));
+        cache.end = cache.last + need;
+        F.L_jid = trim_list(&F);
+      }
+      if (need > 0 && nbrelpid > 0 && (done_small <= F.KC+1 || A) &&
+          small_fail <= fail_limit &&
+          cache.last < cache.base + 2*F.KC+2*RU+RELSUP /* heuristic */)
+      {
+        pari_sp av3 = avma;
+        GEN p0 = NULL;
+        long j, k;
+        REL_t *last = cache.last;
+        if (R && lg(W) > 1 && (done_small % 2))
+        {
+          /* We have full rank for class group and unit, however those
+           * lattices are too small. The following tries to improve the
+           * prime group lattice: it specifically looks for relations
+           * involving the primes generating the class group. */
+          long l = lg(W) - 1;
+          /* We need lg(W)-1 relations to squash the class group. */
+          F.L_jid = vecslice(F.perm, 1, l); cache.end = cache.last + l;
+          /* Lie to the add_rel subsystem: pretend we miss relations involving
+           * the primes generating the class group (and only those). */
+          cache.missing = l;
+          for ( ; l > 0; l--) mael(cache.basis, F.perm[l], F.perm[l]) = 0;
+        }
+        j = done_small % (F.KC+1);
+        if (j)
+        {
+          long mj = small_multiplier[j];
+          p0 = gel(F.LP, j);
+          if (!A)
+          {
+            /* Prevent considering both P_iP_j and P_jP_i in small_norm */
+            /* Since not all elements end up in F.L_jid (because they can
+             * be eliminated by hnfspec/add or by trim_list, keep track
+             * of which ideals are being considered at each run. */
+            for (i = k = 1; i < lg(F.L_jid); i++)
+              if (F.L_jid[i] > mj)
+              {
+                small_multiplier[F.L_jid[i]] = j;
+                F.L_jid[k++] = F.L_jid[i];
+              }
+            setlg(F.L_jid, k);
+          }
+        }
+        if (lg(F.L_jid) > 1)
+          small_norm(&cache, &F, nf, nbrelpid, M_sn, fact, p0);
+        avma = av3;
+        if (!A && cache.last != last)
+          small_fail = 0;
+        else
+          small_fail++;
+        if (R && lg(W) > 1 && (done_small % 2))
+        {
+          long l = lg(W) - 1;
+          for ( ; l > 0; l--) mael(cache.basis, F.perm[l], F.perm[l]) = 1;
+          cache.missing = 0;
+        }
+        F.L_jid = F.perm;
+        need = 0; cache.end = cache.last;
+        done_small++;
+        F.sfb_chg = 0;
+      }
+      if (need > 0)
+      {
+        /* Random relations */
+        if (lg(F.subFB) == 1) goto START;
+        nreldep++;
+        if (nreldep > MAXDEPSIZESFB) {
+          if (++sfb_trials > SFB_MAX && LIMC < LIMCMAX/6) goto START;
+          F.sfb_chg = sfb_INCREASE;
+          nreldep = 0;
+        }
+        else if (!(nreldep % MAXDEPSFB))
+          F.sfb_chg = sfb_CHANGE;
+        if (F.newpow)
+        {
+          F.sfb_chg = 0;
+          if (DEBUGLEVEL) err_printf("\n");
+        }
+        if (F.sfb_chg && !subFB_change(&F)) goto START;
+        if (F.newpow) {
+          powFBgen(&cache, &F, nf, auts);
+          MAXDEPSIZESFB = (lg(F.subFB) - 1) * DEPSIZESFBMULT;
+          MAXDEPSFB = MAXDEPSIZESFB / DEPSFBDIV;
+          if (DEBUGLEVEL) timer_printf(&T, "powFBgen");
+        }
+        if (!F.sfb_chg) rnd_rel(&cache, &F, nf, fact);
+        F.L_jid = F.perm;
+      }
+      if (DEBUGLEVEL) timer_start(&T);
+      if (precpb)
+      {
+        GEN nf0 = nf;
+        if (precadd) { PRECREG += precadd; precadd = 0; }
+        else           PRECREG = precdbl(PRECREG);
+        if (DEBUGLEVEL)
+        {
+          char str[64]; sprintf(str,"Buchall_param (%s)",precpb);
+          pari_warn(warnprec,str,PRECREG);
+        }
+        nf = gclone( nfnewprec_shallow(nf, PRECREG) );
+        if (precdouble) gunclone(nf0);
+        precdouble++; precpb = NULL;
+
+        for (i = 1; i < lg(PERM); i++) F.perm[i] = PERM[i];
+        cache.chk = cache.base; W = NULL; /* recompute arch components+reduce */
+      }
+      avma = av4;
+      GEN mat_alt, U_alt, elements, norms;
+      if (cache.chk != cache.last)
+      { /* Reduce relation matrices */
+        long l = cache.last - cache.chk + 1, j;
+        GEN mat = cgetg(l, t_MAT), emb = cgetg(l, t_MAT);//M = nf_get_M(nf), 
+        int first = (W == NULL); /* never reduced before */
+        REL_t *rel;
+        for (j=1,rel = cache.chk + 1; j < l; rel++,j++)
+        {
+          gel(mat,j) = rel->R;
+	  //this converts the element to a complex embeddings
+	  if (!rel->m) {gel(emb,j) = zerocol(N);}
+	  else gel(emb,j) = rel->m;
+          /*if (!rel->relaut)
+            gel(emb,j) = get_log_embed(rel, M, RU, R1, PRECREG);
+          else
+            gel(emb,j) = perm_log_embed(gel(emb, j-rel->relorig),
+                                        gel(F.embperm, rel->relaut));*/
+        }
+        if (DEBUGLEVEL) timer_printf(&T, "floating point embeddings");
+	long li = lg(gel(mat, 1));;
+        norms = cgetg(lg(emb), t_VEC);
+        if (first) {
+          elements = cgetg(lg(emb), t_VEC);
+	  for (j = 1;  j < lg(emb); j++){
+	    gel(elements, j) = coltoliftalg(nf, gel(emb, j));
+	  }
+          mat_alt  =  cgetg(lg(mat), t_MAT); 
+	  for (j = 1; j < lg(mat); j++){
+	    GEN matj = gel(mat, j);
+            GEN p1 = cgetg(li, t_COL);
+	    gel(mat_alt, j) = p1;
+	    for (i = 1; i < li; i++) gel(p1, i) = stoi(gel(matj, i));
+	  }
+          //W = hnfspec_i(mat, F.perm, &dep, &B, &C, F.subFB ? lg(F.subFB)-1:0);
+        }
+        else{
+	  long col = lg(C);
+          elements = cgetg(lg(emb)+col-1, t_VEC);
+	  for (j = 1; j < col; j++) gel(elements, j) = gel(C, j);
+	  for (j = 1;  j < lg(emb); j++){
+	    gel(elements, j+col-1) = coltoliftalg(nf, gel(emb, j));
+	  }
+          mat_alt = cgetg(lg(mat) + col -1, t_MAT);
+	  for (j = 1; j < col; j++) gel(mat_alt, j) = gel(W, j);
+	  for (j = 1; j < lg(mat); j++){
+	    GEN matj = gel(mat, j);
+            GEN p1 = cgetg(li, t_COL);
+	    gel(mat_alt, j+col-1) = p1;
+	    for (i = 1; i < li; i++) gel(p1, i) = stoi(gel(matj, i));
+	  }
+          //W = hnfadd_i(W, F.perm, &dep, &B, &C, mat, emb);
+	}
+	W = ZM_hnfall(mat_alt, &U_alt, 0);
+        GEN new_elements = cgetg(lg(elements), t_VEC);
+	printf("%li %li\n", lg(U_alt), lg(elements));
+        for (int j = 1; j < lg(U_alt); j++){
+          GEN U_j = gel(U_alt, j);
+	  GEN temp_element = nfpow(nf, gel(elements, j), gel(U_j, j));
+	  for (i =1; i < lg(U_j); i++) if (i != j && gel(elements, i)!= gen_0) temp_element = nfmul(nf, temp_element, nfpow(nf, gel(elements, i), gel(U_j, i)));
+	  gel(new_elements, j) = temp_element;  
+	  gel(norms, j) = nfnorm(nf, temp_element);
+        }
+        C = new_elements;
+        for (int li = 1; absequalui(1, gel(norms, li)); li++) {output(gel(U_alt, li));if (degree(gel(C, li)) != 0 && truecoeff(gel(C, li), 0) != gen_1) vectrunc_append(fu0, gcopy(gel(C, li)));}
+        gerepileall(av2, 3, &W, &C, &norms);
+        cache.chk = cache.last;
+        if (DEBUGLEVEL)
+        {
+          if (first)
+            timer_printf(&T, "hnfspec [%ld x %ld]", lg(F.perm)-1, l-1);
+          else
+            timer_printf(&T, "hnfadd (%ld + %ld)", l-1, lg(dep)-1);
+        }
+      }
+      else if (!W)
+      {
+        need = old_need;
+        F.L_jid = vecslice(F.perm, 1, need);
+        continue;
+      }
+      output(fu0);
+      need = 100;
+      /*zc = (lg(C)-1) - (lg(B)-1) - (lg(W)-1);
+      output(vecslice(C, 1, 10));
+      need = F.KC - (lg(W)-1) - (lg(B)-1);
+      * FIXME: replace by err(e_BUG,"") 
+      if (!need && cache.missing)
+      { * The test above will never be true except if 27449|class number,
+         * but the code implicitely assumes that if we have maximal rank
+         * for the ideal lattice, then cache.missing == 0. 
+        for (i = 1; cache.missing; i++)
+          if (!mael(cache.basis, i, i))
+          {
+            long j;
+            mael(cache.basis, i, i) = 1;
+            cache.missing--;
+            for (j = i+1; j <= F.KC; j++) mael(cache.basis, j, i) = 0;
+          }
+      }
+      zc = (lg(C)-1) - (lg(B)-1) - (lg(W)-1);
+      if (zc < n_units)//RU-1)
+      {
+        * need more columns for units 
+        need += n_units;//RU-1 - zc;
+        if (need > F.KC) need = F.KC;
+      }
+      if (need)
+      { * dependent rows 
+        F.L_jid = vecslice(F.perm, 1, need);
+        vecsmall_sort(F.L_jid);
+        if (need != old_need) nreldep = 0;
+        old_need = need;
+      }
+      else
+      {
+        * If the relation lattice is too small, check will be > 1 and we
+         * will do a new run of small_norm/rnd_rel asking for 1 relation.
+         * However they tend to give a relation involving the first element
+         * of L_jid. We thus permute which element is the first of L_jid in
+         * order to increase the probability of finding a good relation, i.e.
+         * one that increases the relation lattice. 
+        if (lg(W) > 2 && squash_index % (lg(W) - 1))
+        {
+          long j, l = lg(W) - 1;
+          F.L_jid = leafcopy(F.perm);
+          for (j = 1; j <= l; j++)
+            F.L_jid[j] = F.perm[1 + (j + squash_index - 1) % l];
+        }
+        else
+          F.L_jid = F.perm;
+        squash_index++;
+      }
+      *if statement to catch when we have reached either a time or number of relationships searched*/
+
+      if (zc > n_units) r_con = 3;
+      if ((flag == 1 || flag == 3) && timer_get(&T) > max_time) r_con = 1;
+      if ((flag == 2 || flag == 3) && rel_num > max_rel) r_con = 2;
+    }
+    while (need);
+    if (done) break;
+    
+    if (!A)
+    {
+      small_fail = 0; fail_limit = maxss(F.KC / FAIL_DIVISOR, MINFAIL);
+      old_need = 0;
+    }
+    A = vecslice(C, 1, zc); /* cols corresponding to units */
+    output(A);
+    R = compute_multiple_of_R(A, RU, N, &need, &lambda);
+    if (need < old_need) small_fail = 0;
+    old_need = need;
+    if (!lambda) { precpb = "bestappr"; continue; }
+    if (!R)
+    { /* not full rank for units */
+      if (DEBUGLEVEL) err_printf("regulator is zero.\n");
+      if (!need) precpb = "regulator";
+      continue;
+    }
+
+    h = ZM_det_triangular(W);
+    if (DEBUGLEVEL) err_printf("\n#### Tentative class number: %Ps\n", h);
+
+
+    switch (compute_R(lambda, mulir(h,invhr), &L, &R, &T))
+    {
+      case fupb_RELAT:
+        need = 1; /* not enough relations*/
+        continue;
+      case fupb_PRECI: /* prec problem unless we cheat on Bach constant */
+        if ((precdouble&7) == 7 && LIMC<=LIMCMAX/6) goto START;
+        precpb = "compute_R";
+        continue;
+    }
+    /* DONE */
+
+    if (F.KCZ2 > F.KCZ)
+    {
+      if (F.sfb_chg && !subFB_change(&F)) goto START;
+      if (!be_honest(&F, nf, auts, fact)) goto START;
+      if (DEBUGLEVEL) timer_printf(&T, "to be honest");
+    }
+    F.KCZ2 = 0; /* be honest only once */
+
+    /* fundamental units */
+    {
+      pari_sp av3 = avma;
+      GEN AU, U, H, v = extract_full_lattice(L); /* L may be very large */
+      long e;
+      if (v)
+      {
+        A = vecpermute(A, v);
+        L = vecpermute(L, v);
+      }
+      /* arch. components of fund. units */
+      H = ZM_hnflll(L, &U, 1); U = vecslice(U, lg(U)-(RU-1), lg(U)-1);
+      U = ZM_mul(U, ZM_lll(H, 0.99, LLL_IM|LLL_COMPATIBLE));
+      AU = RgM_mul(A, U);
+      A = cleanarch(AU, N, PRECREG);
+      if (DEBUGLEVEL) timer_printf(&T, "cleanarch");
+      if (!A) {
+        precadd = nbits2extraprec( gexpo(AU) + 64 ) - gprecision(AU);
+        if (precadd <= 0) precadd = 1;
+        precpb = "cleanarch"; continue;
+      }
+      fu = getfu(nf, &A, &e, PRECREG);
+      if (DEBUGLEVEL) timer_printf(&T, "getfu");
+      if (!fu && (flun & nf_FORCE))
+      { /* units not found but we want them */
+        if (e > 0) pari_err_OVERFLOW("bnfinit [fundamental units too large]");
+        if (e < 0) precadd = nbits2extraprec( (-e - (BITS_IN_LONG - 1)) + 64);
+        avma = av3; precpb = "getfu"; continue;
+      }
+    }
+  } while ((need || precpb) && done == 0);
+  
+  GEN result = cgetg(3, t_VEC);
+  gel(result, 1) = fu;
+  gel(result, 2) = stoi(rel_num);
+  return result;
 }
