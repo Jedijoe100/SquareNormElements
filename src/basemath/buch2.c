@@ -4630,8 +4630,7 @@ random_units_param(GEN P, int flag, int max_time, int max_rel, int n_units, int 
   int r_con = 0, done = 0; //Idea is this is used to tell the loop if we should return what we have
   long rel_num= 0;
   GEN fu0 = vectrunc_init(1);
-  GEN E, U;
-  long zc_old = 1;
+  GEN E, WP, FB_primes;
   int unit_num = 0;
 
   if (DEBUGLEVEL) timer_start(&T);
@@ -4790,6 +4789,7 @@ START:
   old_need = need = cache.end - cache.last;
   add_cyclotomic_units(nf, zu, &cache, &F);
   cache.end = cache.last + need;
+  
 
   W = NULL; zc = 0;
   sfb_trials = nreldep = 0;
@@ -4806,6 +4806,7 @@ START:
     }
     need = 0;
   }
+  FB_primes = gtovec(vecsmall_reverse(vec_append(vecsmall_reverse(F.FB), -1)));
 
   do
   {
@@ -4933,90 +4934,61 @@ START:
         cache.chk = cache.base; W = NULL; /* recompute arch components+reduce */
       }
       avma = av4;
-      GEN mat_alt, U_alt, elements;
       if (cache.chk != cache.last)
       { /* Reduce relation matrices */
         long l = cache.last - cache.chk + 1, j;
-        GEN mat = cgetg(l, t_MAT), emb = cgetg(l, t_MAT), elem = cgetg(l, t_MAT), M = nf_get_M(nf); 
+        GEN mat = cgetg(l, t_MAT), matP = cgetg(l, t_MAT), elem = cgetg(l, t_VEC), M = nf_get_M(nf); 
         int first = (W == NULL); /* never reduced before */
         REL_t *rel;
         for (j=1,rel = cache.chk + 1; j < l; rel++,j++)
         {
-          gel(mat,j) = rel->R;
-	  //this converts the element to a complex embeddings
-	  if (!rel->m)
-	    gel(elem, j) =zerocol(N);//store the relation
-          else
-	    gel(elem, j) =rel->m;//store the relation
-            
-          if (!rel->relaut){
-            gel(emb,j) = get_log_embed(rel, M, RU, R1, PRECREG);
-	  }else{
-            gel(emb,j) = perm_log_embed(gel(emb, j-rel->relorig),
-                                        gel(F.embperm, rel->relaut));
+	  GEN temp =rel->m;
+	  long li = lg(FB_primes);
+	  gel(matP, j) = gtocol(rel->R);
+	  if(temp){
+	    gel(elem, j) = coltoliftalg(nf, temp);
+	    GEN element_norm = nfnorm(nf, temp);
+	    GEN factors = factor(element_norm);
+	    long lf = lg(gel(factors, 1));
+	    long cur_val = 1;
+	    GEN factors_full = zerocol(li - 1);
+	    for (i = 1; i <  li && cur_val < lf; i++){ 
+              if (cmpii(gel(gel(factors, 1), cur_val), gel(FB_primes, i))==0){
+                gel(factors_full, i) = gel(gel(factors, 2), cur_val);
+		cur_val += 1;
+	      }
+	    }
+            gel(mat,j) = FpC_red(factors_full, gen_2);
+          }else {
+            gel(elem, j) = coltoliftalg(nf, zerocol(N));
+	    gel(mat, j) = zerocol(li - 1);
 	  }
         }
         if (DEBUGLEVEL) timer_printf(&T, "floating point embeddings");
-	long li = lg(gel(mat, 1));;
         if (first) {
-          elements = cgetg(l, t_VEC);
-	  for (j = 1;  j < l; j++){
-	    gel(elements, j) = coltoliftalg(nf, gel(elem, j));
-	  }
-	  C = emb;
-          mat_alt  =  cgetg(lg(mat), t_MAT); 
-	  for (j = 1; j < lg(mat); j++){
-	    GEN matj = gel(mat, j);
-            GEN p1 = cgetg(li, t_COL);
-	    gel(mat_alt, j) = p1;
-	    for (i = 1; i < li; i++) gel(p1, i) = stoi(gel(matj, i));
-	  }
+          E = elem;
+          W = mat; 
+          WP = matP;
           //W = hnfspec_i(mat, F.perm, &dep, &B, &C, F.subFB ? lg(F.subFB)-1:0);
         }
         else{
-	  long col = lg(C);
-          elements = cgetg(l+col-1, t_VEC);
-	  for (j = 1; j < col; j++) gel(elements, j) = gel(E, j);
-	  for (j = 1;  j < lg(elem); j++){
-	    gel(elements, j+col-1) = coltoliftalg(nf, gel(elem, j));
-	  }
-
-	  GEN temp_C = cgetg(l+col-1, t_MAT);
-	  for (j = 1; j < col; j++) gel(temp_C, j) = gel(C, j);
-	  for (j = 1;  j < lg(emb); j++){
-	    gel(temp_C, j+col-1) = gel(emb, j);
-	  }
-	  C = temp_C;
-	  
-          mat_alt = cgetg(lg(mat) + col -1, t_MAT);
-	  for (j = 1; j < col; j++) gel(mat_alt, j) = gel(W, j);
-	  for (j = 1; j < lg(mat); j++){
-	    GEN matj = gel(mat, j);
-            GEN p1 = cgetg(li, t_COL);
-	    gel(mat_alt, j+col-1) = p1;
-	    for (i = 1; i < li; i++) gel(p1, i) = stoi(gel(matj, i));
-	  }
+	  //compute add the columns to new matrix
           //W = hnfadd_i(W, F.perm, &dep, &B, &C, mat, emb);
 	}
-	W = ZM_hnfall(mat_alt, &U_alt, 0);
-	C = RgM_zm_mul(C, U_alt);
-	E = elements;
-	if(first) U=U_alt;
-	else{
-	  long lg_U = lg(U_alt);
-	  GEN U_temp = cgetg(lg_U, t_MAT);
-	  for (i = 1; i < lg_U; i++){
-            GEN U_temp_j = zerocol(lg_U-1);
-            if (i < lg(U)) { 
-	      GEN U_j = gel(U, i);
-	      for (long n = 1; n<lg(U);n++) gel(U_temp_j, n) =  gel(U_j, n);
-	    }
-	    gel(U_temp, i) = U_temp_j;
+	GEN ker_W = FpM_ker(W,  gen_2);
+	long li = lg(ker_W);
+	GEN ker_test = ZM_mul(WP, ker_W);
+	for (j = 1; j <  li; j++){
+	  if (isexactzero(gel(ker_test, j)) || isexactzero(FpC_red(gel(ker_test, j), gen_2))){
+	    GEN elem_famat = to_famat(E, gtovec(gel(ker_W, j)));
+	    elem_famat = famat_reduce(elem_famat);
+	    vectrunc_append(fu0, elem_famat);
+	    unit_num+=1;
+	    //output(elem_famat);
 	  }
-	  U = ZM_mul(U_temp, U_alt);
 	}
-	//need to check this math before running
-        gerepileall(av2, 4, &W, &C, &E, &U);//need to ensure right elements get saved
+	//compute and chech elements
+        gerepileall(av2, 4, &W, &WP, &E, &fu0);//need to ensure right elements get saved
         cache.chk = cache.last;
         if (DEBUGLEVEL)
         {
@@ -5032,14 +5004,7 @@ START:
         F.L_jid = vecslice(F.perm, 1, need);
         continue;
       }
-      for (i = zc_old; gnorml1(gel(W, i), PRECREG) == gen_0; i++)//check columns for units
-      {
-	if(gcmp(gnorml1(real_i(gel(C, i)), PRECREG), stoi(10)) == 1){//check column for non trivial u
-          vectrunc_append(fu0, gcopy(gel(U, i)));//adding the column from U and then will return a unit
-	  unit_num += 1;
-        }
-      }	
-      zc_old = i;
+      output(fu0);
       if (unit_num > 0){
         fu = fu0;
 	done = 1;
