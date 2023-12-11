@@ -4472,153 +4472,27 @@ GEN
 random_units(GEN P, int flag, int max_time, int max_rel, int n_units, int n_val, long flun, long prec)
 { return random_units_param(P, flag, max_time, max_rel, n_units, n_val, BNF_C1, BNF_C2, BNF_RELPID, flag, prec); }
 
-static GEN
-getfu_alt(GEN nf, GEN *ptA, long *pte, long prec)
-{
-  GEN u, y, matep, A, vec, T = nf_get_pol(nf), M = nf_get_M(nf);
-  long e, i, j, R1, RU, N = degpol(T), A_size;
-
-  if (DEBUGLEVEL) err_printf("\n#### Computing fundamental units\n");
-  R1 = nf_get_r1(nf); RU = (N+R1)>>1;
-  if (RU==1) { *pte=LONG_MAX; return cgetg(1,t_VEC); }
-
-  *pte = 0; A = *ptA;
-
-  A_size = lg(A)-1;
-  
-  matep = cgetg(A_size,t_MAT);
-  for (j=1; j<A_size; j++)
-  {
-    GEN c = cgetg(RU+1,t_COL), Aj = gel(A,j);
-    GEN s = gdivgs(RgV_sum(real_i(Aj)), -N); /* -log |norm(Aj)| / N */
-    gel(matep,j) = c;
-    for (i=1; i<=R1; i++) gel(c,i) = gadd(s, gel(Aj,i));
-    for (   ; i<=RU; i++) gel(c,i) = gadd(s, gmul2n(gel(Aj,i),-1));
-  }
-  u = lll(real_i(matep));//lll was here originally
-  //printf("matep: (%li, %li), u: (%li,%li)\n", lg(matep), lg(gel(matep, 1)), lg(u), lg(gel(u, 1)));
-
-  y = RgM_mul(matep,u);
-  A_size = lg(y);
-  if (!exp_OK(y, pte))
-    return not_given(*pte == LONG_MAX? fupb_LARGE: fupb_PRECI);
-  if (prec <= 0) prec = gprecision(A);
-  y = RgM_solve_realimag(M, gexp(y,prec));
-  if (!y) return not_given(fupb_PRECI);
-  y = grndtoi(y, &e);
-  *pte = -e;
-  if (e >= 0) return not_given(fupb_PRECI);
-  for (j=1; j<A_size; j++)
-    if (!is_pm1(nfnorm(nf, gel(y,j)))) { *pte=0; return not_given(fupb_PRECI); }
-  settyp(y, t_VEC);
-  /* y[i] are unit generators. Normalize: smallest T2 norm + lead coeff > 0 */
-  vec = log_m1(R1,RU,prec);
-  for (j=1; j<A_size; j++)
-  {
-    GEN u = gel(y,j), v = zk_inv(nf, u);
-    if (gcmp(RgC_fpnorml2(v,DEFAULTPREC),
-             RgC_fpnorml2(u,DEFAULTPREC)) < 0)
-    {
-      u = v;
-    }
-    u = coltoliftalg(nf,u);
-    if (gsigne(leading_coeff(u)) < 0)
-    {
-      u = RgX_neg(u);
-    }
-    gel(y,j) = u;
-  }
-  return y;
-}
-static int
-compute_L(GEN A, long RU, long N, long *pneed, GEN *ptL)
-{
-  GEN T, d, mdet, Im_mdet, xreal, L, D, den;
-  long i, j, r, R1 = 2*RU - N;
-  int precpb;
-  pari_sp av = avma;
-
-  if (RU == 1) { *ptL = zeromat(0, lg(A)-1); return fupb_NONE; }
-
-  if (DEBUGLEVEL) err_printf("\n#### Computing regulator multiple\n");
-  xreal = real_i(A); /* = (log |sigma_i(u_j)|) */
-  mdet = clean_cols(xreal, &precpb);
-  /* will cause precision to increase on later failure, but we may succeed! */
-  *ptL = precpb? NULL: gen_1;
-  T = cgetg(RU+1,t_COL);
-  for (i=1; i<=R1; i++) gel(T,i) = gen_1;
-  for (   ; i<=RU; i++) gel(T,i) = gen_2;
-  mdet = shallowconcat(T, mdet); /* det(Span(mdet)) = N * R */
-
-  /* could be using indexrank(), but need custom "get_pivot" function */
-  d = RgM_pivots(mdet, NULL, &r, &compute_multiple_of_R_pivot);
-  /* # of independent columns == unit rank ? */
-  /*if (lg(mdet)-1 - r != RU)
-  {
-    if (DEBUGLEVEL)
-      err_printf("Unit group rank = %ld < %ld\n",lg(mdet)-1 - r, RU);
-    *pneed = RU - (lg(mdet)-1-r);
-    avma = av; return NULL;
-  }*/
-
-  Im_mdet = cgetg(lg(mdet)-r, t_MAT); /* extract independent columns */
-  /* N.B: d[1] = 1, corresponding to T above */
-  gel(Im_mdet, 1) = T;
-  for (i = j = 2; i <= lg(mdet)-r; j++)
-    if (d[j]) gel(Im_mdet, i++) = gel(mdet,j);
-  if (lg(mdet)-r<= 2){ *ptL = NULL; return fupb_NONE ; }
-
-  L = RgM_inv(Im_mdet);
-  if (!L) { *ptL = L; return fupb_NONE ; }
-
-
-  //printf("rows of L: %li\n", lg(L)-1);
-  L = rowslice(L, 2, lg(mdet)-r-1); /* remove first line */
-  L = RgM_mul(L, xreal); /* approximate rational entries */
-  //Need to work out what to replace the next line with
-  //D = gmul2n(mpmul(*ptkR,z), 1); /* bound for denom(lambda) */
-  D = gmul2n(stoi(1), -50);
-  //output(D);
-  //if (expo(D) < 0 && rtodbl(D) < 0.95) *ptL = NULL; return fupb_PRECI;
-  L = bestappr_noer(L,D);
-  if (!L)
-  {
-    if (DEBUGLEVEL) err_printf("truncation error in bestappr\n");
-    return fupb_PRECI;
-  }
-  den = Q_denom(L);
-  /*if (mpcmp(den,D) > 0)
-  {
-    if (DEBUGLEVEL) err_printf("D = %Ps\nden = %Ps\n",D,
-                    lgefint(den) <= DEFAULTPREC? den: itor(den,LOWDEFAULTPREC));
-    return fupb_PRECI;
-  }*/
-  L = Q_muli_to_int(L, den);
-  gerepileall(av, 1, &L);
-
-  *ptL = L; return fupb_NONE;
-}
 /*same as in Buchall_param with the exception that there is a flag that checks to see if we halt at any point earlier.
  * 0 Buchall_param
  * 1 stop when reached max time
  * 2 stop when reached max relationships
  * 3 conditions 1 and 2
  * */
+
 GEN
 random_units_param(GEN P, int flag, int max_time, int max_rel, int n_units, int n_val, double cbach, double cbach2, long nbrelpid, long flun, long prec)
 {
   pari_timer T;
   pari_sp av0 = avma, av, av2;
-  long PRECREG, N, R1, R2, RU, low, high, LIMC0, LIMC, LIMC2, LIMCMAX, zc, i;
+  long PRECREG, N, R1, R2, RU, low, high, LIMC0, LIMC, LIMC2, LIMCMAX, i;
   long LIMres;
   long MAXDEPSIZESFB, MAXDEPSFB;
-  long nreldep, sfb_trials, need, old_need, precdouble = 0, precadd = 0;
-  long done_small, small_fail, fail_limit, small_norm_prec, squash_index;
+  long nreldep, sfb_trials, need, precdouble = 0, precadd = 0;
+  long done_small, small_fail, fail_limit, small_norm_prec;// squash_index;
   long flag_nfinit = 0;
   double LOGD, LOGD2, lim;
-  GEN computed = NULL, zu, nf, M_sn, D, A, W, R, h, PERM, fu = NULL /*-Wall*/;
+  GEN computed = NULL, zu, nf, M_sn, D, A, W, R, PERM, fu = NULL /*-Wall*/;
   GEN small_multiplier;
-  GEN L, invhr, C, lambda, dep;
   GEN auts, cyclic;
   const char *precpb = NULL;
   int FIRST = 1, class1 = 0;
@@ -4629,8 +4503,8 @@ random_units_param(GEN P, int flag, int max_time, int max_rel, int n_units, int 
   FACT *fact;
   int r_con = 0, done = 0; //Idea is this is used to tell the loop if we should return what we have
   long rel_num= 0;
-  GEN fu0 = vectrunc_init(1);
-  GEN E, WP, FB_primes;
+  GEN fu0 = cgetg(1, t_VEC);
+  GEN E, WP, FB_primes, element_factorisation = cgetg(1, t_MAT);
   int unit_num = 0;
 
   if (DEBUGLEVEL) timer_start(&T);
@@ -4676,6 +4550,7 @@ random_units_param(GEN P, int flag, int max_time, int max_rel, int n_units, int 
     nf = nfnewprec_shallow(nf, PRECREG);
   M_sn = nf_get_M(nf);
   if (PRECREG > small_norm_prec) M_sn = gprec_w(M_sn, small_norm_prec);
+
 
   zu = rootsof1(nf);
   gel(zu,2) = nf_to_scalar_or_alg(nf, gel(zu,2));
@@ -4735,9 +4610,9 @@ random_units_param(GEN P, int flag, int max_time, int max_rel, int n_units, int 
   LIMres = primeneeded(N, R1, R2, LOGD);
   cache_prime_dec(&GRHcheck, LIMres, nf);
   /* invhr ~ 2^r1 (2pi)^r2 / sqrt(D) w * Res(zeta_K, s=1) = 1 / hR */
-  invhr = gmul(gdiv(gmul2n(powru(mppi(DEFAULTPREC), R2), RU),
-              mulri(gsqrt(D,DEFAULTPREC),gel(zu,1))),
-              compute_invres(&GRHcheck, LIMres));
+  //invhr = gmul(gdiv(gmul2n(powru(mppi(DEFAULTPREC), R2), RU),
+  //            mulri(gsqrt(D,DEFAULTPREC),gel(zu,1))),
+  //            compute_invres(&GRHcheck, LIMres));
   if (DEBUGLEVEL) timer_printf(&T, "computing inverse of hR");
   av = avma;
 
@@ -4781,17 +4656,17 @@ START:
   F.id2 = zerovec(F.KC);
   MAXDEPSIZESFB = (lg(F.subFB) - 1) * DEPSIZESFBMULT;
   MAXDEPSFB = MAXDEPSIZESFB / DEPSFBDIV;
-  done_small = 0; small_fail = 0; squash_index = 0;
+  done_small = 0; small_fail = 0; 
   fail_limit = F.KC + 1;
   R = NULL; A = NULL;
+  FB_primes = vecsmall_prepend(F.FB, -1);
   av2 = avma;
   init_rel(&cache, &F, RELSUP + RU-1); /* trivial relations */
-  old_need = need = cache.end - cache.last;
+  need = n_val;//cache.end - cache.last;
   add_cyclotomic_units(nf, zu, &cache, &F);
   cache.end = cache.last + need;
   
-
-  W = NULL; zc = 0;
+  W = NULL;
   sfb_trials = nreldep = 0;
 
   if (computed)
@@ -4806,7 +4681,6 @@ START:
     }
     need = 0;
   }
-  FB_primes = gtovec(vecsmall_reverse(vec_append(vecsmall_reverse(F.FB), -1)));
 
   do
   {
@@ -4816,7 +4690,6 @@ START:
       rel_num += need;
 
       /*allows for us to set custom need value from program end*/
-      if (n_val != 0) need = n_val;
 
       if (need > 0)
       {
@@ -4936,93 +4809,118 @@ START:
       avma = av4;
       if (cache.chk != cache.last)
       { /* Reduce relation matrices */
-        long l = cache.last - cache.chk + 1, j;
-        GEN mat = cgetg(l, t_MAT), matP = cgetg(l, t_MAT), elem = cgetg(l, t_VEC), M = nf_get_M(nf); 
-        int first = (W == NULL); /* never reduced before */
+        long l, j;
         REL_t *rel;
-        for (j=1,rel = cache.chk + 1; j < l; rel++,j++)
+        l = cache.last - cache.chk + 1;
+        GEN mat = cgetg(l, t_MAT), matP = cgetg(l, t_MAT), elem = cgetg(l, t_VEC); 
+        int first = (W == NULL); /* never reduced before */
+	long lf, cur_val, li = lg(FB_primes);
+	GEN remove_induces = cgetg(1, t_VECSMALL);
+        for (j=1, rel = cache.chk + 1; j < l; rel++,j++)
         {
-	  GEN temp =rel->m;
-	  long li = lg(FB_primes);
 	  gel(matP, j) = gtocol(rel->R);
-	  if(temp){
-	    gel(elem, j) = coltoliftalg(nf, temp);
-	    GEN element_norm = nfnorm(nf, temp);
+	  if(rel->m){
+	    gel(elem, j) = coltoliftalg(nf, rel->m);
+	    /* Factoring the elements norm */
+	    GEN element_norm = nfnorm(nf, rel->m);
 	    GEN factors = factor(element_norm);
-	    long lf = lg(gel(factors, 1));
-	    long cur_val = 1;
+	    lf = lgcols(factors), cur_val = 1;
 	    GEN factors_full = zerocol(li - 1);
 	    for (i = 1; i <  li && cur_val < lf; i++){ 
-              if (cmpii(gel(gel(factors, 1), cur_val), gel(FB_primes, i))==0){
-                gel(factors_full, i) = gel(gel(factors, 2), cur_val);
+              if (cmpis(gmael(factors, 1, cur_val), FB_primes[i])==0){
+                gel(factors_full, i) = gmael(factors, 2, cur_val);
 		cur_val += 1;
 	      }
 	    }
-            gel(mat,j) = FpC_red(factors_full, gen_2);
-          }else {
-            gel(elem, j) = coltoliftalg(nf, zerocol(N));
-	    gel(mat, j) = zerocol(li - 1);
-	  }
-        }
-        if (DEBUGLEVEL) timer_printf(&T, "floating point embeddings");
+            gel(mat,j) = factors_full;
+	    remove_induces = vecsmall_append(remove_induces, j);
+          }else{
+            /* if there is no element */
+            gel(mat, j) = zerocol(li-1);
+            gel(elem, j) = zerocol(N);
+          }
+	}
+	/* storing the values in respective elements */
         if (first) {
-          E = elem;
-          W = mat; 
-          WP = matP;
-          //W = hnfspec_i(mat, F.perm, &dep, &B, &C, F.subFB ? lg(F.subFB)-1:0);
+          E = vecpermute(elem, remove_induces);
+          W = vecpermute(mat, remove_induces); 
+          WP = vecpermute(matP, remove_induces);
         }
         else{
-	  //compute add the columns to new matrix
-          //W = hnfadd_i(W, F.perm, &dep, &B, &C, mat, emb);
+	  E = concat(E, vecpermute(elem, remove_induces));
+	  W = concat(W, vecpermute(mat, remove_induces));
+	  WP = concat(WP, vecpermute(matP, remove_induces));
 	}
-	GEN ker_W = FpM_ker(W,  gen_2);
-	long li = lg(ker_W);
+	/* compute the elements in kernel of W mod 2 or the elements with square norm */
+	GEN ker_W = FpM_ker(W, gen_2);
+	long li_k = lg(ker_W);
 	GEN ker_test = ZM_mul(WP, ker_W);
-	for (j = 1; j <  li; j++){
-	  if (isexactzero(gel(ker_test, j)) || isexactzero(FpC_red(gel(ker_test, j), gen_2))){
-	    GEN elem_famat = to_famat(E, gtovec(gel(ker_W, j)));
-	    elem_famat = famat_reduce(elem_famat);
-	    vectrunc_append(fu0, elem_famat);
-	    unit_num+=1;
-	    //output(elem_famat);
-	  }
-	}
-	//compute and chech elements
-        gerepileall(av2, 4, &W, &WP, &E, &fu0);//need to ensure right elements get saved
-        cache.chk = cache.last;
-        if (DEBUGLEVEL)
-        {
-          if (first)
-            timer_printf(&T, "hnfspec [%ld x %ld]", lg(F.perm)-1, l-1);
-          else
-            timer_printf(&T, "hnfadd (%ld + %ld)", l-1, lg(dep)-1);
-        }
-      }
-      else if (!W)
-      {
-        need = old_need;
-        F.L_jid = vecslice(F.perm, 1, need);
-        continue;
-      }
-      output(fu0);
-      if (unit_num > 0){
+	long k, pi_l;
+	l = lg(F.LP);
+	//if (r_con != 0){
+	  for (j = 1; j <  li_k; j++){
+            if(isexactzero(gel(ker_test, j))){ /* check if the column in kernel corresponds to a unit */
+	      GEN elem_famat = cgetg(3, t_MAT);
+	      gel(elem_famat, 1) = gtocol(E);
+	      gel(elem_famat, 2) = gel(ker_W, j);
+	      elem_famat = famat_reduce(elem_famat);
+	      fu0 = vec_append(fu0, elem_famat);
+	      unit_num += 1;
+	    }else if (!isexactzero(FpC_red(gel(ker_test, j), gen_2))){ /* check if the column corresponds to a element that is not a square */
+	      GEN elem_famat = cgetg(3, t_MAT);
+	      gel(elem_famat, 1) = gtocol(E);
+	      gel(elem_famat, 2) = gel(ker_W, j);
+	      elem_famat = famat_reduce(elem_famat);
+	      GEN independence_matrix = cgetg(2, t_MAT); 
+              gel(independence_matrix, 1) = gel(ker_test, j);
+	      if (lg(element_factorisation) > 1) independence_matrix = concat(independence_matrix, element_factorisation);
+	      /* Add prime numbers to independence matrix for even degree if valuation at p is greater than n */
+	      if (N%2 == 0){
+	        GEN element_factors = ZM_ZC_mul(W, gel(ker_W, j));
+	        GEN valuations = cgetg(2, t_MAT);;
+	        pi_l = 0;
+	        for (i= 2; i < li; i++) {
+                  if (cmpis(gel(element_factors, i), N-1) >= 0){
+                    gel(valuations, 1) = zerocol(l-1);
+		    for (k = 1; k < l; k++) {
+                      if (cmpis(gmael(F.LP, k, 1), FB_primes[i]) == 0) gel(gel(valuations, 1), k) = gen_1; 
+		    }
+		    pi_l += 1;
+		    independence_matrix = concat(independence_matrix, valuations);
+		  }	
+	        }
+	      }
+	      /* check that this unit is independent */
+	      if (lg(FpM_ker(independence_matrix, gen_2)) == 1){
+	        fu0 = vec_append(fu0, elem_famat);
+	        unit_num+=1;
+		GEN temp_matrix = cgetg(2, t_MAT);
+		gel(temp_matrix, 1) = gel(ker_test, j);
+	        element_factorisation = concat(element_factorisation, temp_matrix);
+	      }
+	    }
+          }
         fu = fu0;
+        gerepileall(av2, 4, &W, &WP, &E, &fu);
+        cache.chk = cache.last;
+      }
+      if (unit_num > 0){
 	done = 1;
 	break;
       }else{
-        need = 10;//may want to reconsider this need;
+        need = n_val;
       }
 
-      if (zc > n_units) r_con = 3;
       if ((flag == 1 || flag == 3) && timer_get(&T) > max_time) r_con = 1;
       if ((flag == 2 || flag == 3) && rel_num > max_rel) r_con = 2;
     }
-    while (need);
+    while (need && done == 0 && r_con == 0);
   } while ((need || precpb) && done == 0);
   
-  //need to return E as well;
   GEN result = cgetg(3, t_VEC);
   gel(result, 1) = fu;
   gel(result, 2) = stoi(rel_num);
+  delete_cache(&cache); delete_FB(&F); free_GRHcheck(&GRHcheck);
+  result = gerepilecopy(av0, result);
   return result;
 }

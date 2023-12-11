@@ -2334,6 +2334,10 @@ GEN     nfcyclotomicunits(GEN nf, GEN zu);
 GEN     nfsign_units(GEN bnf, GEN archp, int add_zu);
 GEN     signunits(GEN bignf);
 
+GEN     random_units_param(GEN P, int flag, int max_time, int max_rel, int n_units, int n_val, double bach, double bach2, long nbrelpid, long flun, long prec);
+GEN	random_units_time(GEN P, int max_time, long flag, long prec);
+GEN	random_units(GEN P, int flag, int max_time, int max_rel, int n_units, int n_val, long flun, long prec);
+
 /* buch3.c */
 
 GEN     ABC_to_bnr(GEN A, GEN B, GEN C, GEN *H, int gen);
