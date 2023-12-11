@@ -4464,13 +4464,10 @@ START:
   return res;
 }
 
-GEN
-random_units_time(GEN P, int max_time, long flag, long prec)
-{ return random_units_param(P, 1, max_time, 0, 0, 0, BNF_C1, BNF_C2, BNF_RELPID, flag, prec); }
 
 GEN
-random_units(GEN P, int flag, int max_time, int max_rel, int n_units, int n_val, long flun, long prec)
-{ return random_units_param(P, flag, max_time, max_rel, n_units, n_val, BNF_C1, BNF_C2, BNF_RELPID, flag, prec); }
+random_units(GEN P, int flag, int max_time, int max_rel, int n_units, int n_val, long prec)
+{ return random_units_param(P, flag, max_time, max_rel, n_units, n_val, BNF_C1, BNF_C2, BNF_RELPID, 0, prec); }
 
 /*same as in Buchall_param with the exception that there is a flag that checks to see if we halt at any point earlier.
  * 0 Buchall_param
@@ -4917,10 +4914,6 @@ START:
     while (need && done == 0 && r_con == 0);
   } while ((need || precpb) && done == 0);
   
-  GEN result = cgetg(3, t_VEC);
-  gel(result, 1) = fu;
-  gel(result, 2) = stoi(rel_num);
   delete_cache(&cache); delete_FB(&F); free_GRHcheck(&GRHcheck);
-  result = gerepilecopy(av0, result);
-  return result;
+  return fu;
 }
